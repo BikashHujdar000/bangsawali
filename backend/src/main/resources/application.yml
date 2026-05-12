@@ -1,0 +1,28 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/bangsawali
+    username: bikashhujdar
+    password: bikash2000
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+  sql:
+    init:
+      mode: always
+
+app:
+  jwt:
+    secret: "replace-with-a-long-secret-key-for-production-change-me-1234567890"
+    expiration-ms: 86400000
+
+logging:
+  level:
+    root: INFO
+    com.bauwalal.community.logging: INFO

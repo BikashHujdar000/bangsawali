@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: Inter, system-ui, sans-serif;
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+@keyframes loader {
+  0% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(390%);
+  }
+}
