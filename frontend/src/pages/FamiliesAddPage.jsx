@@ -9,6 +9,7 @@ import {
   findDuplicateHouseholdMember,
   getFamilyById,
   listFamilyPersons,
+  listFamilyPersonsExtended,
   setFamilyPrimaryPerson,
   updateFamily,
 } from "../services/familyService";
@@ -315,9 +316,10 @@ export default function FamiliesAddPage() {
       setError("");
       setRelationRemovals([]);
       try {
-        const [family, members, districtCatalog] = await Promise.all([
+        const [family, members, extended, districtCatalog] = await Promise.all([
           getFamilyById(familyIdParam),
           listFamilyPersons(familyIdParam),
+          listFamilyPersonsExtended(familyIdParam),
           listDistricts(),
         ]);
         if (districtCatalog?.length) {
@@ -339,7 +341,7 @@ export default function FamiliesAddPage() {
         const father = subject.father || null;
         const mother = subject.mother || null;
         const spouse = subject.spouse || null;
-        const children = members.filter(
+        const children = extended.filter(
           (m) =>
             (subject.id && Number(m?.father?.id) === Number(subject.id)) ||
             (subject.id && Number(m?.mother?.id) === Number(subject.id))
@@ -811,6 +813,29 @@ export default function FamiliesAddPage() {
     };
   }
 
+  /**
+   * Relation-step saves often send fatherId/motherId/spouse as null placeholders. The API
+   * applies them literally, so updating an existing linked person (e.g. the head as "father"
+   * while editing a son) would wipe that person's own parents/spouse. Merge from the server
+   * when the payload still has nulls for those fields.
+   */
+  async function preserveRelationFieldsForExistingUpdate(personId, payload) {
+    const id = Number(personId);
+    if (!id || Number.isNaN(id) || id <= 0) return payload;
+    try {
+      const prev = await getPersonById(id);
+      const next = { ...payload };
+      if (next.fatherId == null && prev?.father?.id != null) next.fatherId = prev.father.id;
+      if (next.motherId == null && prev?.mother?.id != null) next.motherId = prev.mother.id;
+      if (next.spouseId == null && prev?.spouse?.id != null) next.spouseId = prev.spouse.id;
+      const emptySpouseIds = !next.spouseIds || next.spouseIds.length === 0;
+      if (emptySpouseIds && prev?.spouse?.id != null) next.spouseIds = [prev.spouse.id];
+      return next;
+    } catch {
+      return payload;
+    }
+  }
+
   async function upsertPerson(personId, payload, options = {}) {
     let pid =
       personId != null && personId !== ""
@@ -837,7 +862,7 @@ export default function FamiliesAddPage() {
         phone: payload.phone === "" ? null : payload.phone ?? null,
       });
       if (existingId != null) {
-        return updatePerson(existingId, payload);
+        return updatePerson(existingId, await preserveRelationFieldsForExistingUpdate(existingId, payload));
       }
     }
 
@@ -954,7 +979,7 @@ export default function FamiliesAddPage() {
       let fatherNp = fatherNpTrim || fatherEnTrim || fatherEn;
       if (!String(fatherEn || "").trim()) fatherEn = fatherNpTrim || fatherEnTrim || "Unknown";
       if (!String(fatherNp || "").trim()) fatherNp = fatherEn;
-      const father = await upsertPerson(fatherPersonIdToUse, {
+      const fatherPayload = {
         ...basePayload,
         nameEn: fatherEn,
         nameNp: fatherNp || fatherEn,
@@ -971,7 +996,13 @@ export default function FamiliesAddPage() {
         motherId: null,
         spouseId: null,
         spouseIds: [],
-      }, { skipDuplicatePersonIds: Array.from(excludePrimary) });
+      };
+      const fatherPayloadToSend = fatherPersonIdToUse
+        ? await preserveRelationFieldsForExistingUpdate(fatherPersonIdToUse, fatherPayload)
+        : fatherPayload;
+      const father = await upsertPerson(fatherPersonIdToUse, fatherPayloadToSend, {
+        skipDuplicatePersonIds: Array.from(excludePrimary),
+      });
       fatherId = father.id;
     }
 
@@ -991,7 +1022,7 @@ export default function FamiliesAddPage() {
       if (!String(motherNp || "").trim()) motherNp = motherEn;
       const excludeMother = new Set(excludePrimary);
       if (fatherId) excludeMother.add(fatherId);
-      const mother = await upsertPerson(motherPersonIdToUse, {
+      const motherPayload = {
         ...basePayload,
         nameEn: motherEn,
         nameNp: motherNp || motherEn,
@@ -1008,7 +1039,13 @@ export default function FamiliesAddPage() {
         motherId: null,
         spouseId: null,
         spouseIds: [],
-      }, { skipDuplicatePersonIds: Array.from(excludeMother) });
+      };
+      const motherPayloadToSend = motherPersonIdToUse
+        ? await preserveRelationFieldsForExistingUpdate(motherPersonIdToUse, motherPayload)
+        : motherPayload;
+      const mother = await upsertPerson(motherPersonIdToUse, motherPayloadToSend, {
+        skipDuplicatePersonIds: Array.from(excludeMother),
+      });
       motherId = mother.id;
     }
 
@@ -1041,7 +1078,8 @@ export default function FamiliesAddPage() {
       let spouseIdToUse = existingId;
       const spouseExclude = new Set(spouseExcludeBase);
       for (const id of spouseIds) spouseExclude.add(id);
-      const savedSpouse = await upsertPerson(spouseIdToUse, pay, {
+      const payToSend = spouseIdToUse ? await preserveRelationFieldsForExistingUpdate(spouseIdToUse, pay) : pay;
+      const savedSpouse = await upsertPerson(spouseIdToUse, payToSend, {
         skipDuplicatePersonIds: Array.from(spouseExclude),
       });
       spouseRows.push({ ...spouse, personId: savedSpouse.id });
@@ -1276,11 +1314,17 @@ export default function FamiliesAddPage() {
         childMotherId,
       ].filter((id) => id != null && id !== "" && !Number.isNaN(Number(id)) && Number(id) > 0);
 
-      const savedChild = await upsertPerson(childPersonId, {
+      const childPayload = {
         ...pay,
         fatherId: childFatherId,
         motherId: childMotherId,
-      }, { skipDuplicatePersonIds: skipChildDup });
+      };
+      const childPayloadToSend = childPersonId
+        ? await preserveRelationFieldsForExistingUpdate(childPersonId, childPayload)
+        : childPayload;
+      const savedChild = await upsertPerson(childPersonId, childPayloadToSend, {
+        skipDuplicatePersonIds: skipChildDup,
+      });
       childRows.push({ ...child, personId: savedChild.id });
     }
 
@@ -1330,8 +1374,12 @@ export default function FamiliesAddPage() {
   }
 
   async function loadPreviewFromDb(familyId) {
-    const [family, members] = await Promise.all([getFamilyById(familyId), listFamilyPersons(familyId)]);
-    setPreview({ family, members });
+    const [family, members, extended] = await Promise.all([
+      getFamilyById(familyId),
+      listFamilyPersons(familyId),
+      listFamilyPersonsExtended(familyId),
+    ]);
+    setPreview({ family, members, extended });
   }
 
   async function handleNext() {
@@ -2184,12 +2232,13 @@ export default function FamiliesAddPage() {
                         : preview.members.find((m) => Number(m.id) === Number(pid)) || preview.members[0] || null;
                     const father = primary?.father || null;
                     const mother = primary?.mother || null;
-                    const spouses = preview.members.filter(
+                    const relationPool = preview.extended ?? preview.members;
+                    const spouses = relationPool.filter(
                       (m) =>
                         (primary?.spouse?.id && Number(m.id) === Number(primary.spouse.id)) ||
                         Number(m?.spouse?.id) === Number(primary?.id)
                     );
-                    const children = preview.members.filter(
+                    const children = relationPool.filter(
                       (m) =>
                         Number(m?.father?.id) === Number(primary?.id) || Number(m?.mother?.id) === Number(primary?.id)
                     );
