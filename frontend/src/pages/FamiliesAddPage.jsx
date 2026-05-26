@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import AppLayout from "../layouts/AppLayout";
 import Button from "../components/common/Button";
@@ -118,6 +118,130 @@ function provinceLabel(district, catalog) {
   return row?.provinceNameEn ?? "";
 }
 
+const DIRECTORY_PICKER_CAP_UNFILTERED = 500;
+const DIRECTORY_PICKER_CAP_FILTERED = 400;
+
+/**
+ * One field: type to filter by English, Nepali, or numeric ID; pick a row to link that person.
+ */
+function SearchablePersonDirectoryPicker({
+  htmlId,
+  label,
+  hint,
+  persons,
+  loading,
+  excludeIds,
+  onPick,
+  onClear,
+  linkedPersonId,
+  linkedNameEn,
+}) {
+  const [filter, setFilter] = useState("");
+
+  const excludeKey = excludeIds?.length ? excludeIds.slice().sort().join(",") : "";
+  const excludeSet = useMemo(() => {
+    const s = new Set();
+    for (const x of excludeIds || []) {
+      const n = Number(x);
+      if (n > 0 && !Number.isNaN(n)) s.add(n);
+    }
+    return s;
+  }, [excludeKey]);
+
+  const filtered = useMemo(() => {
+    if (!persons?.length) return [];
+    const base = persons.filter((p) => p?.id != null && !excludeSet.has(Number(p.id)));
+    const q = filter.trim().toLowerCase();
+    let list = base;
+    if (q) {
+      list = base.filter((p) => {
+        const idStr = String(p.id);
+        const en = (p.nameEn || "").toLowerCase();
+        const np = (p.nameNp || "").toLowerCase();
+        return idStr.includes(q) || en.includes(q) || np.includes(q);
+      });
+    }
+    list = list.slice().sort((a, b) => Number(a.id) - Number(b.id));
+    const cap = q ? DIRECTORY_PICKER_CAP_FILTERED : DIRECTORY_PICKER_CAP_UNFILTERED;
+    return list.slice(0, cap);
+  }, [persons, filter, excludeSet]);
+
+  const truncated =
+    !loading &&
+    persons.length > 0 &&
+    !filter.trim() &&
+    persons.filter((p) => p?.id != null && !excludeSet.has(Number(p.id))).length > DIRECTORY_PICKER_CAP_UNFILTERED;
+
+  return (
+    <div className="space-y-2">
+      {label ? (
+        <FormField label={label} htmlFor={htmlId} hint={hint}>
+          <Input
+            id={htmlId}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by English, Nepali, or person ID…"
+            autoComplete="off"
+          />
+        </FormField>
+      ) : (
+        <div className="space-y-1.5">
+          {hint ? <p className="text-xs text-slate-600">{hint}</p> : null}
+          <Input
+            id={htmlId}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="Filter by English, Nepali, or person ID…"
+            autoComplete="off"
+          />
+        </div>
+      )}
+      {loading ? <p className="text-xs text-slate-500">Loading person directory…</p> : null}
+      {!loading ? (
+        <ul
+          className="max-h-56 overflow-y-auto rounded border border-slate-200 bg-white text-sm shadow-sm"
+          role="listbox"
+          aria-label={label}
+        >
+          {filtered.length === 0 ? (
+            <li className="px-3 py-2 text-slate-500">No people match (or directory is empty).</li>
+          ) : (
+            filtered.map((p) => (
+              <li key={p.id} role="option">
+                <button
+                  type="button"
+                  className="w-full px-3 py-2 text-left hover:bg-blue-50"
+                  onClick={() => {
+                    onPick(p);
+                    setFilter("");
+                  }}
+                >
+                  <span className="font-mono text-slate-600">#{p.id}</span>{" "}
+                  <span className="font-medium text-slate-900">{p.nameEn}</span>
+                  <span className="text-slate-600"> · {p.nameNp}</span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
+      {truncated ? (
+        <p className="text-xs text-slate-500">
+          Showing first {DIRECTORY_PICKER_CAP_UNFILTERED} people (by ID). Type in the box to narrow the list.
+        </p>
+      ) : null}
+      {linkedPersonId ? (
+        <p className="text-xs text-slate-700">
+          Linked <span className="font-mono font-medium">#{linkedPersonId}</span> · {linkedNameEn || "—"}{" "}
+          <button type="button" className="text-blue-600 underline hover:text-blue-800" onClick={onClear}>
+            Unlink (keep typed names)
+          </button>
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function hasFatherFormData(f) {
   const fatherEnTrim = String(f.fatherNameEn || "").trim();
   const fatherNpTrim = String(f.fatherNameNp || "").trim();
@@ -130,33 +254,47 @@ function hasMotherFormData(f) {
   return Boolean(motherEnTrim || motherNpTrim || f.motherPersonId);
 }
 
-/** Minimum father fields required to persist (matches step-2 save rules). */
+/** Both English and Nepali names filled (non-empty after trim). */
+function relationRowHasBothNames(row) {
+  const en = String(row?.nameEn ?? "").trim();
+  const np = String(row?.nameNp ?? "").trim();
+  return Boolean(en && np);
+}
+
+/** Minimum father fields required to persist (both names required when saving this section). */
 function hasFatherSaveableForPersist(f) {
   const fatherEnTrim = String(f.fatherNameEn || "").trim();
   const fatherNpTrim = String(f.fatherNameNp || "").trim();
-  const pid = f.fatherPersonId != null && f.fatherPersonId !== "" ? Number(f.fatherPersonId) : NaN;
-  const hasPid = !Number.isNaN(pid) && pid > 0;
-  return hasPid || Boolean(fatherEnTrim || fatherNpTrim);
+  return Boolean(fatherEnTrim && fatherNpTrim);
 }
 
 function hasMotherSaveableForPersist(f) {
   const motherEnTrim = String(f.motherNameEn || "").trim();
   const motherNpTrim = String(f.motherNameNp || "").trim();
-  const pid = f.motherPersonId != null && f.motherPersonId !== "" ? Number(f.motherPersonId) : NaN;
-  const hasPid = !Number.isNaN(pid) && pid > 0;
-  return hasPid || Boolean(motherEnTrim || motherNpTrim);
+  return Boolean(motherEnTrim && motherNpTrim);
 }
 
-/** Spouse row counts as present if saved to DB or has a display name. */
+function relationRowTouchedForStep2(row) {
+  const en = String(row.nameEn || "").trim();
+  const np = String(row.nameNp || "").trim();
+  return Boolean(
+    en ||
+      np ||
+      row.addDetails ||
+      (row.dateOfBirth && String(row.dateOfBirth).trim()) ||
+      (row.phone && String(row.phone).trim()) ||
+      (row.districtId && String(row.districtId).trim())
+  );
+}
+
+/** Spouse row counts as present if saved to DB or both names are filled. */
 function hasNamedOrPersistedSpouse(f) {
   return f.spouses.some((s) => {
     if (s.personId != null && s.personId !== "") {
       const n = Number(s.personId);
       if (!Number.isNaN(n) && n > 0) return true;
     }
-    const en = String(s.nameEn || "").trim();
-    const np = String(s.nameNp || "").trim();
-    return Boolean(en || np);
+    return relationRowHasBothNames(s);
   });
 }
 
@@ -287,22 +425,43 @@ export default function FamiliesAddPage() {
   const [relationRemovals, setRelationRemovals] = useState([]);
   const [fatherPanelOpen, setFatherPanelOpen] = useState(false);
   const [motherPanelOpen, setMotherPanelOpen] = useState(false);
+  const [fatherDirectoryLinkOpen, setFatherDirectoryLinkOpen] = useState(false);
+  const [motherDirectoryLinkOpen, setMotherDirectoryLinkOpen] = useState(false);
   const [spouseRowOpen, setSpouseRowOpen] = useState([true]);
   const [childRowOpen, setChildRowOpen] = useState([true]);
   /** Step 2: saving father or mother block only ("Done" → persist + collapse). */
   const [parentSectionSaving, setParentSectionSaving] = useState(null);
-  const [directoryPersons, setDirectoryPersons] = useState([]);
+  /** Step 2: Father/Mother "Done" completed (or loaded complete); spouses/children unlock only after both. */
+  const [step2FatherGateDone, setStep2FatherGateDone] = useState(false);
+  const [step2MotherGateDone, setStep2MotherGateDone] = useState(false);
+  const [personDirectoryAll, setPersonDirectoryAll] = useState([]);
+  const [personDirectoryLoading, setPersonDirectoryLoading] = useState(false);
 
   useEffect(() => {
     listDistricts().then(setDistricts);
   }, []);
 
   useEffect(() => {
-    if (step !== 2 && !isEditMode) return;
+    if (step !== 2) {
+      setPersonDirectoryAll([]);
+      return;
+    }
+    let cancelled = false;
+    setPersonDirectoryLoading(true);
     listPersons()
-      .then(setDirectoryPersons)
-      .catch(() => setDirectoryPersons([]));
-  }, [step, isEditMode]);
+      .then((rows) => {
+        if (!cancelled) setPersonDirectoryAll(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => {
+        if (!cancelled) setPersonDirectoryAll([]);
+      })
+      .finally(() => {
+        if (!cancelled) setPersonDirectoryLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [step]);
 
   useEffect(() => {
     if (!isEditMode || !familyIdParam) return;
@@ -428,11 +587,23 @@ export default function FamiliesAddPage() {
               }))
             : [{ ...relationTemplate, gender: "MALE" }],
         }));
+        const memberEditMode = Number(subject.id) !== Number(family.primaryPersonId);
         setDraft({
           familyId: family.id,
           primaryPersonId: subject.id,
-          memberEditMode: Number(subject.id) !== Number(family.primaryPersonId),
+          memberEditMode,
         });
+        if (memberEditMode) {
+          setStep2FatherGateDone(true);
+          setStep2MotherGateDone(true);
+        } else {
+          const fatherNamesOk =
+            Boolean(father) && String(father.nameEn || "").trim() && String(father.nameNp || "").trim();
+          const motherNamesOk =
+            Boolean(mother) && String(mother.nameEn || "").trim() && String(mother.nameNp || "").trim();
+          setStep2FatherGateDone(fatherNamesOk);
+          setStep2MotherGateDone(fatherNamesOk && motherNamesOk);
+        }
         setFatherPanelOpen(false);
         setMotherPanelOpen(false);
         setSpouseRowOpen(spouse ? [false] : [true]);
@@ -722,6 +893,9 @@ export default function FamiliesAddPage() {
       setRelationRemovals((r) => (r.includes(pid) ? r : [...r, pid]));
     }
     setFatherPanelOpen(false);
+    setMotherPanelOpen(false);
+    setStep2FatherGateDone(false);
+    setStep2MotherGateDone(false);
     setForm((prev) => ({
       ...prev,
       fatherPersonId: null,
@@ -749,6 +923,11 @@ export default function FamiliesAddPage() {
       setRelationRemovals((r) => (r.includes(pid) ? r : [...r, pid]));
     }
     setMotherPanelOpen(false);
+    if (step2FatherGateDone) {
+      setStep2MotherGateDone(true);
+    } else {
+      setStep2MotherGateDone(false);
+    }
     setForm((prev) => ({
       ...prev,
       motherPersonId: null,
@@ -833,6 +1012,50 @@ export default function FamiliesAddPage() {
       return next;
     } catch {
       return payload;
+    }
+  }
+
+  /** Full PUT body from a GET /persons/:id snapshot (for targeted relation updates). */
+  function buildPersonUpdatePayloadFromPrev(prev, overrides = {}) {
+    if (!prev?.id) throw new Error("Missing person snapshot");
+    const famId = overrides.familyId ?? (prev.family?.id != null ? Number(prev.family.id) : null);
+    if (!famId) throw new Error("Person has no family id for update");
+    const o = overrides;
+    return {
+      familyId: famId,
+      nameEn: o.nameEn ?? prev.nameEn,
+      nameNp: o.nameNp ?? prev.nameNp,
+      gender: o.gender ?? prev.gender,
+      districtId:
+        o.districtId !== undefined ? o.districtId : prev.district?.id != null ? Number(prev.district.id) : null,
+      dateOfBirth: o.dateOfBirth !== undefined ? o.dateOfBirth : prev.dateOfBirth ?? null,
+      wardNo: o.wardNo !== undefined ? o.wardNo : prev.wardNo != null ? Number(prev.wardNo) : null,
+      toleEn: o.toleEn !== undefined ? o.toleEn : prev.toleEn ?? null,
+      toleNp: o.toleNp !== undefined ? o.toleNp : prev.toleNp ?? null,
+      municipality: o.municipality !== undefined ? o.municipality : prev.municipality ?? null,
+      vdc: o.vdc !== undefined ? o.vdc : prev.vdc ?? null,
+      phone: o.phone !== undefined ? o.phone : prev.phone ?? null,
+      fatherId: o.fatherId !== undefined ? o.fatherId : prev.father?.id ?? null,
+      motherId: o.motherId !== undefined ? o.motherId : prev.mother?.id ?? null,
+      spouseId: o.spouseId !== undefined ? o.spouseId : prev.spouse?.id ?? null,
+      spouseIds: o.spouseIds !== undefined ? o.spouseIds : prev.spouse?.id != null ? [prev.spouse.id] : [],
+    };
+  }
+
+  /**
+   * When both parents of the edited person are known, always set reciprocal spouse links
+   * (father ↔ mother) for this product’s household model.
+   */
+  async function linkFatherMotherAsSpousesAlways(fatherPersonId, motherPersonId) {
+    const fid = Number(fatherPersonId);
+    const mid = Number(motherPersonId);
+    if (!fid || !mid || Number.isNaN(fid) || Number.isNaN(mid) || fid === mid) return;
+    try {
+      const [fp, mp] = await Promise.all([getPersonById(fid), getPersonById(mid)]);
+      await updatePerson(fid, buildPersonUpdatePayloadFromPrev(fp, { spouseId: mid, spouseIds: [mid] }));
+      await updatePerson(mid, buildPersonUpdatePayloadFromPrev(mp, { spouseId: fid, spouseIds: [fid] }));
+    } catch {
+      /* non-fatal */
     }
   }
 
@@ -950,24 +1173,22 @@ export default function FamiliesAddPage() {
       if (relationRowHasPersistedPerson(s)) continue;
       const en = String(s.nameEn || "").trim();
       const np = String(s.nameNp || "").trim();
-      const rowTouched =
-        en ||
-        np ||
-        s.addDetails ||
-        (s.dateOfBirth && String(s.dateOfBirth).trim()) ||
-        (s.phone && String(s.phone).trim()) ||
-        (s.districtId && String(s.districtId).trim());
-      if (!rowTouched) continue;
-      if (!en && !np) {
+      if (!relationRowTouchedForStep2(s)) continue;
+      if (!en || !np) {
         throw new Error(
-          `Spouse (row ${idx + 1}): enter a name in English or Nepali (at least one is required), or link an existing person before saving.`
+          `Spouse (row ${idx + 1}): enter both English and Nepali names (or link an existing person with both names) before saving.`
         );
       }
     }
 
     const fatherEnTrim = String(form.fatherNameEn || "").trim();
     const fatherNpTrim = String(form.fatherNameNp || "").trim();
-    const hasFatherText = Boolean(fatherEnTrim || fatherNpTrim);
+    const hasFatherPartial =
+      Boolean(fatherEnTrim || fatherNpTrim) && !(fatherEnTrim && fatherNpTrim);
+    if (hasFatherPartial) {
+      throw new Error("Father: enter both English and Nepali names before saving.");
+    }
+    const hasFatherText = Boolean(fatherEnTrim && fatherNpTrim);
     let fatherPersonIdToUse =
       form.fatherPersonId != null && form.fatherPersonId !== "" ? Number(form.fatherPersonId) : null;
     if (fatherPersonIdToUse != null && Number.isNaN(fatherPersonIdToUse)) fatherPersonIdToUse = null;
@@ -975,10 +1196,8 @@ export default function FamiliesAddPage() {
     if (fatherPersonIdToUse && !hasFatherText) {
       fatherId = fatherPersonIdToUse;
     } else if (hasFatherText) {
-      let fatherEn = fatherEnTrim || fatherNpTrim;
-      let fatherNp = fatherNpTrim || fatherEnTrim || fatherEn;
-      if (!String(fatherEn || "").trim()) fatherEn = fatherNpTrim || fatherEnTrim || "Unknown";
-      if (!String(fatherNp || "").trim()) fatherNp = fatherEn;
+      const fatherEn = fatherEnTrim;
+      const fatherNp = fatherNpTrim;
       const fatherPayload = {
         ...basePayload,
         nameEn: fatherEn,
@@ -1008,7 +1227,12 @@ export default function FamiliesAddPage() {
 
     const motherEnTrim = String(form.motherNameEn || "").trim();
     const motherNpTrim = String(form.motherNameNp || "").trim();
-    const hasMotherText = Boolean(motherEnTrim || motherNpTrim);
+    const hasMotherPartial =
+      Boolean(motherEnTrim || motherNpTrim) && !(motherEnTrim && motherNpTrim);
+    if (hasMotherPartial) {
+      throw new Error("Mother: enter both English and Nepali names before saving.");
+    }
+    const hasMotherText = Boolean(motherEnTrim && motherNpTrim);
     let motherPersonIdToUse =
       form.motherPersonId != null && form.motherPersonId !== "" ? Number(form.motherPersonId) : null;
     if (motherPersonIdToUse != null && Number.isNaN(motherPersonIdToUse)) motherPersonIdToUse = null;
@@ -1016,10 +1240,8 @@ export default function FamiliesAddPage() {
     if (motherPersonIdToUse && !hasMotherText) {
       motherId = motherPersonIdToUse;
     } else if (hasMotherText) {
-      let motherEn = motherEnTrim || motherNpTrim;
-      let motherNp = motherNpTrim || motherEnTrim || motherEn;
-      if (!String(motherEn || "").trim()) motherEn = motherNpTrim || motherEnTrim || "Unknown";
-      if (!String(motherNp || "").trim()) motherNp = motherEn;
+      const motherEn = motherEnTrim;
+      const motherNp = motherNpTrim;
       const excludeMother = new Set(excludePrimary);
       if (fatherId) excludeMother.add(fatherId);
       const motherPayload = {
@@ -1074,6 +1296,14 @@ export default function FamiliesAddPage() {
         continue;
       }
 
+      const enS = String(spouse.nameEn || "").trim();
+      const npS = String(spouse.nameNp || "").trim();
+      if (!enS || !npS) {
+        throw new Error(
+          "Each spouse you save must have both English and Nepali names filled in (even when linked to an existing person)."
+        );
+      }
+
       const pay = relationPayload(basePayload, spouse);
       let spouseIdToUse = existingId;
       const spouseExclude = new Set(spouseExcludeBase);
@@ -1110,6 +1340,8 @@ export default function FamiliesAddPage() {
       }
     }
 
+    await linkFatherMotherAsSpousesAlways(finalFatherId, finalMotherId);
+
     const mainPerson = await updatePerson(saved.primaryPersonId, {
       ...basePayload,
       nameEn: form.nameEn,
@@ -1135,7 +1367,7 @@ export default function FamiliesAddPage() {
       return;
     }
     if (!hasFatherSaveableForPersist(form)) {
-      setError("Enter the father's English and/or Nepali name, or link an existing person, before saving.");
+      setError("Enter both the father's English name and Nepali name (or pick someone from the directory with both filled) before pressing Done.");
       setErrorModalOpen(true);
       return;
     }
@@ -1162,6 +1394,7 @@ export default function FamiliesAddPage() {
         spouses: spouseRows,
       }));
       setFatherPanelOpen(false);
+      setStep2FatherGateDone(true);
       setSuccess("Father details saved. You can open this section again if needed; use Next when all relations are ready.");
     } catch (err) {
       const msg = formatErrorForUi(err);
@@ -1181,8 +1414,13 @@ export default function FamiliesAddPage() {
       setErrorModalOpen(true);
       return;
     }
+    if (!draft.memberEditMode && !step2FatherGateDone) {
+      setError("Save the Father section with Done first, then you can save the Mother section.");
+      setErrorModalOpen(true);
+      return;
+    }
     if (!hasMotherSaveableForPersist(form)) {
-      setError("Enter the mother's English and/or Nepali name, or link an existing person, before saving.");
+      setError("Enter both the mother's English name and Nepali name (or pick someone from the directory with both filled) before pressing Done.");
       setErrorModalOpen(true);
       return;
     }
@@ -1209,6 +1447,7 @@ export default function FamiliesAddPage() {
         spouses: spouseRows,
       }));
       setMotherPanelOpen(false);
+      setStep2MotherGateDone(true);
       setSuccess("Mother details saved. You can open this section again if needed; use Next when all relations are ready.");
     } catch (err) {
       const msg = formatErrorForUi(err);
@@ -1235,16 +1474,16 @@ export default function FamiliesAddPage() {
         (c.phone && String(c.phone).trim()) ||
         (c.districtId && String(c.districtId).trim());
       if (!rowTouched) continue;
-      if (!en && !np) {
+      if (!en || !np) {
         throw new Error(
-          `Child (row ${idx + 1}): enter a name in English or Nepali (at least one is required) before saving.`
+          `Child (row ${idx + 1}): enter both English and Nepali names before saving.`
         );
       }
     }
 
     const genderUpperEarly = String(form.gender || "").toUpperCase();
     const hasNamedChildEarly = form.children.some(
-      (c) => String(c.nameEn || "").trim() || String(c.nameNp || "").trim()
+      (c) => relationRowHasBothNames(c) || relationRowHasPersistedPerson(c)
     );
     if (
       hasNamedChildEarly &&
@@ -1252,7 +1491,7 @@ export default function FamiliesAddPage() {
       !hasNamedOrPersistedSpouse(form)
     ) {
       throw new Error(
-        "Add a spouse with a name (English or Nepali) before adding children. Each child needs the other parent from the spouse row."
+        "Add a spouse with both English and Nepali names before adding children. Each child needs the other parent from the spouse row."
       );
     }
 
@@ -1266,7 +1505,7 @@ export default function FamiliesAddPage() {
 
     const childRows = [];
     const hasNamedChild = form.children.some(
-      (c) => String(c.nameEn || "").trim() || String(c.nameNp || "").trim()
+      (c) => relationRowHasBothNames(c) || relationRowHasPersistedPerson(c)
     );
     if (hasNamedChild) {
       if (g === "MALE" && !otherParentFromSpouse) {
@@ -1289,6 +1528,9 @@ export default function FamiliesAddPage() {
       if (!childEn && !childNp) {
         childRows.push(child);
         continue;
+      }
+      if (!childEn || !childNp) {
+        throw new Error("Each child must have both English and Nepali names filled in before saving.");
       }
       let childFatherId;
       let childMotherId;
@@ -1341,10 +1583,10 @@ export default function FamiliesAddPage() {
     const addedNewSpouseOrChild =
       draft.memberEditMode &&
       (form.spouses.some(
-        (s) => (String(s.nameEn || "").trim() || String(s.nameNp || "").trim()) && !s.personId
+        (s) => relationRowHasBothNames(s) && !relationRowHasPersistedPerson(s)
       ) ||
         form.children.some(
-          (c) => (String(c.nameEn || "").trim() || String(c.nameNp || "").trim()) && !c.personId
+          (c) => relationRowHasBothNames(c) && !relationRowHasPersistedPerson(c)
         ));
 
     let didBranch = false;
@@ -1392,11 +1634,17 @@ export default function FamiliesAddPage() {
       if (step === 1) {
         await saveStep1ToDb();
         setSuccess("Personal details saved to database.");
+        if (!isEditMode) {
+          setStep2FatherGateDone(false);
+          setStep2MotherGateDone(false);
+        }
         setStep(2);
         return;
       }
       if (step === 2) {
         const saved = await saveStep2ToDb();
+        setStep2FatherGateDone(true);
+        setStep2MotherGateDone(true);
         await loadPreviewFromDb(saved.familyId);
         setSuccess(
           saved.didBranch
@@ -1466,6 +1714,8 @@ export default function FamiliesAddPage() {
   const spouseRequiredForChildrenUi = genderNeedsSpouseForChildren(form.gender);
   const hasSpouseForChildrenUi = hasNamedOrPersistedSpouse(form);
   const childFieldsLockedBySpouse = spouseRequiredForChildrenUi && !hasSpouseForChildrenUi;
+  const relationsStep2Unlocked = draft.memberEditMode || (step2FatherGateDone && step2MotherGateDone);
+  const motherFieldsLockedUntilFatherDone = !draft.memberEditMode && !step2FatherGateDone;
   const fatherSummaryCollapsed = hasFatherFormData(form)
     ? [String(form.fatherNameEn || "").trim(), String(form.fatherNameNp || "").trim()].filter(Boolean).join(" · ") ||
       "Father on file"
@@ -1474,6 +1724,104 @@ export default function FamiliesAddPage() {
     ? [String(form.motherNameEn || "").trim(), String(form.motherNameNp || "").trim()].filter(Boolean).join(" · ") ||
       "Mother on file"
     : "Not added — tap to add mother";
+
+  const fatherDirectoryExcludeIds = useMemo(
+    () =>
+      [draft.primaryPersonId, form.motherPersonId]
+        .map((x) => Number(x))
+        .filter((n) => n > 0 && !Number.isNaN(n)),
+    [draft.primaryPersonId, form.motherPersonId]
+  );
+  const motherDirectoryExcludeIds = useMemo(
+    () =>
+      [draft.primaryPersonId, form.fatherPersonId]
+        .map((x) => Number(x))
+        .filter((n) => n > 0 && !Number.isNaN(n)),
+    [draft.primaryPersonId, form.fatherPersonId]
+  );
+
+  async function pickExistingFatherFromSearch(p) {
+    const id = Number(p.id);
+    if (!id || Number.isNaN(id)) return;
+    try {
+      const full = await getPersonById(id);
+      setForm((prev) => ({
+        ...prev,
+        fatherPersonId: id,
+        fatherNameEn: full.nameEn || prev.fatherNameEn,
+        fatherNameNp: full.nameNp || prev.fatherNameNp,
+        fatherGender: full.gender || "MALE",
+        fatherDateOfBirth: full.dateOfBirth || "",
+        fatherPhone: full.phone || "",
+        fatherDistrictId: full.district?.id ? String(full.district.id) : "",
+        fatherWardNo: full.wardNo != null ? String(full.wardNo) : "",
+        fatherMunicipality: full.municipality || "",
+        fatherVdc: full.vdc || "",
+        fatherUseMunicipality: Boolean(full.municipality) || !full.vdc,
+        fatherToleEn: full.toleEn || "",
+        fatherAddDetails: true,
+        fatherState: provinceLabel(full.district, districts),
+      }));
+    } catch {
+      setForm((prev) => ({
+        ...prev,
+        fatherPersonId: id,
+        fatherNameEn: p.nameEn || prev.fatherNameEn,
+        fatherNameNp: p.nameNp || prev.fatherNameNp,
+        fatherGender: p.gender || prev.fatherGender || "MALE",
+      }));
+    }
+    setFatherPanelOpen(true);
+    setFatherDirectoryLinkOpen(false);
+  }
+
+  async function pickExistingMotherFromSearch(p) {
+    if (!draft.memberEditMode && !step2FatherGateDone) {
+      setError("Save the Father section with Done before linking or editing the mother.");
+      setErrorModalOpen(true);
+      return;
+    }
+    const id = Number(p.id);
+    if (!id || Number.isNaN(id)) return;
+    try {
+      const full = await getPersonById(id);
+      setForm((prev) => ({
+        ...prev,
+        motherPersonId: id,
+        motherNameEn: full.nameEn || prev.motherNameEn,
+        motherNameNp: full.nameNp || prev.motherNameNp,
+        motherGender: full.gender || "FEMALE",
+        motherDateOfBirth: full.dateOfBirth || "",
+        motherPhone: full.phone || "",
+        motherDistrictId: full.district?.id ? String(full.district.id) : "",
+        motherWardNo: full.wardNo != null ? String(full.wardNo) : "",
+        motherMunicipality: full.municipality || "",
+        motherVdc: full.vdc || "",
+        motherUseMunicipality: Boolean(full.municipality) || !full.vdc,
+        motherToleEn: full.toleEn || "",
+        motherAddDetails: true,
+        motherState: provinceLabel(full.district, districts),
+      }));
+    } catch {
+      setForm((prev) => ({
+        ...prev,
+        motherPersonId: id,
+        motherNameEn: p.nameEn || prev.motherNameEn,
+        motherNameNp: p.nameNp || prev.motherNameNp,
+        motherGender: p.gender || prev.motherGender || "FEMALE",
+      }));
+    }
+    setMotherPanelOpen(true);
+    setMotherDirectoryLinkOpen(false);
+  }
+
+  function clearLinkedFather() {
+    setForm((prev) => ({ ...prev, fatherPersonId: null }));
+  }
+
+  function clearLinkedMother() {
+    setForm((prev) => ({ ...prev, motherPersonId: null }));
+  }
 
   return (
     <>
@@ -1626,11 +1974,20 @@ export default function FamiliesAddPage() {
               <div className="rounded border border-slate-200 p-4">
                 <p className="mb-1 text-sm font-semibold text-slate-800">Parents</p>
                 <p className="mb-4 text-xs text-slate-600">
-                  Enter English and Nepali names for each parent (one row each), or link an existing person. Turn on Full
-                  details for address, DOB, and phone. Tap the header to expand or collapse; Remove clears the
-                  parent (soft-deleted after save in edit mode). Press <span className="font-semibold">Done</span> at the
-                  bottom of a parent section to save that block and collapse it. While editing another household member,
-                  existing parents from the database stay locked.
+                  Pick an <span className="font-medium">existing person</span> from the directory list below (filter by
+                  name or ID). That reuses the same person row another sibling already created so{" "}
+                  <span className="font-medium">father_id</span> / <span className="font-medium">mother_id</span> stay
+                  consistent. Saving relations also links father ↔ mother as spouses. Turn on Full details for address,
+                  DOB, and phone. Press <span className="font-semibold">Done</span> on a parent section to save and collapse
+                  it. While editing another household member, existing parents from the database stay locked.
+                </p>
+                <p className="mb-4 rounded border border-amber-200 bg-amber-50/90 px-3 py-2 text-xs leading-snug text-amber-950">
+                  <span className="font-semibold">Order on this step:</span> complete <span className="font-medium">Father</span>{" "}
+                  and press <span className="font-semibold">Done</span>, then work on <span className="font-medium">Mother</span>{" "}
+                  and press <span className="font-semibold">Done</span> (or use <span className="font-medium">Remove mother</span>{" "}
+                  if there is no mother to record). Spouses and children stay closed until both are satisfied. Whenever you
+                  add someone new here, both <span className="font-medium">English</span> and <span className="font-medium">Nepali</span>{" "}
+                  names are required.
                 </p>
                 <div className="space-y-4">
                   <CollapsibleRelationCard
@@ -1644,35 +2001,55 @@ export default function FamiliesAddPage() {
                     removeTitle={fatherParentLocked ? "Locked for this member edit" : "Remove father from record"}
                   >
                     {!fatherParentLocked ? (
-                      <FormField label="Link existing father (optional)" htmlFor="fatherPersonId-select">
-                        <Select
-                          id="fatherPersonId-select"
-                          value={form.fatherPersonId != null && form.fatherPersonId !== "" ? String(form.fatherPersonId) : ""}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (!v) {
-                              setForm((prev) => ({ ...prev, fatherPersonId: null }));
-                              return;
-                            }
-                            const p = directoryPersons.find((x) => String(x.id) === v);
-                            setForm((prev) => ({
-                              ...prev,
-                              fatherPersonId: Number(v),
-                              fatherNameEn: p?.nameEn || prev.fatherNameEn,
-                              fatherNameNp: p?.nameNp || prev.fatherNameNp,
-                            }));
-                          }}
-                        >
-                          <option value="">— New record (enter names below) —</option>
-                          {directoryPersons
-                            .filter((p) => draft.primaryPersonId == null || Number(p.id) !== Number(draft.primaryPersonId))
-                            .map((p) => (
-                              <option key={`father-opt-${p.id}`} value={p.id}>
-                                {p.nameEn} ({p.nameNp}) — ID {p.id}
-                              </option>
-                            ))}
-                        </Select>
-                      </FormField>
+                      <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50/60">
+                        <div className="flex min-h-[2.75rem] items-stretch divide-x divide-slate-200">
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-100/80"
+                            onClick={() => setFatherDirectoryLinkOpen((o) => !o)}
+                            aria-expanded={fatherDirectoryLinkOpen}
+                          >
+                            <span className="shrink-0 text-slate-500" aria-hidden>
+                              {fatherDirectoryLinkOpen ? "▼" : "▶"}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-slate-800">Link existing father (person ID + names)</div>
+                              {!fatherDirectoryLinkOpen ? (
+                                <div className="truncate text-xs text-slate-600">
+                                  {form.fatherPersonId
+                                    ? `Linked #${form.fatherPersonId} · ${form.fatherNameEn || "—"}`
+                                    : "Collapsed — expand to pick from directory or filter by name/ID"}
+                                </div>
+                              ) : null}
+                            </div>
+                          </button>
+                          {!fatherDirectoryLinkOpen && form.fatherPersonId ? (
+                            <button
+                              type="button"
+                              className="shrink-0 px-3 text-xs font-medium text-blue-600 transition hover:bg-slate-100 hover:underline"
+                              onClick={clearLinkedFather}
+                            >
+                              Unlink
+                            </button>
+                          ) : null}
+                        </div>
+                        {fatherDirectoryLinkOpen ? (
+                          <div className="space-y-2 border-t border-slate-200 p-3">
+                            <SearchablePersonDirectoryPicker
+                              htmlId="father-directory-pick"
+                              label=""
+                              hint="Full active directory (scroll or type to filter). You and the chosen mother are excluded."
+                              persons={personDirectoryAll}
+                              loading={personDirectoryLoading}
+                              excludeIds={fatherDirectoryExcludeIds}
+                              onPick={pickExistingFatherFromSearch}
+                              onClear={clearLinkedFather}
+                              linkedPersonId={form.fatherPersonId}
+                              linkedNameEn={form.fatherNameEn}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <FormField label="Name (English)" htmlFor="fatherNameEn" error={fieldErrors.fatherNameEn}>
@@ -1789,7 +2166,14 @@ export default function FamiliesAddPage() {
                   <CollapsibleRelationCard
                     title="Mother"
                     expanded={motherPanelOpen}
-                    onToggle={() => setMotherPanelOpen((o) => !o)}
+                    onToggle={() => {
+                      if (!motherParentLocked && motherFieldsLockedUntilFatherDone) {
+                        setError("Save the Father section with Done first; then you can open Mother.");
+                        setErrorModalOpen(true);
+                        return;
+                      }
+                      setMotherPanelOpen((o) => !o);
+                    }}
                     summaryCollapsed={motherSummaryCollapsed}
                     showRemove={hasMotherFormData(form) && !motherParentLocked}
                     onRemove={removeMother}
@@ -1797,35 +2181,56 @@ export default function FamiliesAddPage() {
                     removeTitle={motherParentLocked ? "Locked for this member edit" : "Remove mother from record"}
                   >
                     {!motherParentLocked ? (
-                      <FormField label="Link existing mother (optional)" htmlFor="motherPersonId-select">
-                        <Select
-                          id="motherPersonId-select"
-                          value={form.motherPersonId != null && form.motherPersonId !== "" ? String(form.motherPersonId) : ""}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (!v) {
-                              setForm((prev) => ({ ...prev, motherPersonId: null }));
-                              return;
-                            }
-                            const p = directoryPersons.find((x) => String(x.id) === v);
-                            setForm((prev) => ({
-                              ...prev,
-                              motherPersonId: Number(v),
-                              motherNameEn: p?.nameEn || prev.motherNameEn,
-                              motherNameNp: p?.nameNp || prev.motherNameNp,
-                            }));
-                          }}
-                        >
-                          <option value="">— New record (enter names below) —</option>
-                          {directoryPersons
-                            .filter((p) => draft.primaryPersonId == null || Number(p.id) !== Number(draft.primaryPersonId))
-                            .map((p) => (
-                              <option key={`mother-opt-${p.id}`} value={p.id}>
-                                {p.nameEn} ({p.nameNp}) — ID {p.id}
-                              </option>
-                            ))}
-                        </Select>
-                      </FormField>
+                      <div className="overflow-hidden rounded-lg border border-slate-200 bg-slate-50/60">
+                        <div className="flex min-h-[2.75rem] items-stretch divide-x divide-slate-200">
+                          <button
+                            type="button"
+                            className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-100/80 disabled:cursor-not-allowed disabled:opacity-50"
+                            disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
+                            onClick={() => setMotherDirectoryLinkOpen((o) => !o)}
+                            aria-expanded={motherDirectoryLinkOpen}
+                          >
+                            <span className="shrink-0 text-slate-500" aria-hidden>
+                              {motherDirectoryLinkOpen ? "▼" : "▶"}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm font-semibold text-slate-800">Link existing mother (person ID + names)</div>
+                              {!motherDirectoryLinkOpen ? (
+                                <div className="truncate text-xs text-slate-600">
+                                  {form.motherPersonId
+                                    ? `Linked #${form.motherPersonId} · ${form.motherNameEn || "—"}`
+                                    : "Collapsed — expand to pick from directory or filter by name/ID"}
+                                </div>
+                              ) : null}
+                            </div>
+                          </button>
+                          {!motherDirectoryLinkOpen && form.motherPersonId ? (
+                            <button
+                              type="button"
+                              className="shrink-0 px-3 text-xs font-medium text-blue-600 transition hover:bg-slate-100 hover:underline"
+                              onClick={clearLinkedMother}
+                            >
+                              Unlink
+                            </button>
+                          ) : null}
+                        </div>
+                        {motherDirectoryLinkOpen ? (
+                          <div className="space-y-2 border-t border-slate-200 p-3">
+                            <SearchablePersonDirectoryPicker
+                              htmlId="mother-directory-pick"
+                              label=""
+                              hint="Full active directory (scroll or type to filter). You and the chosen father are excluded."
+                              persons={personDirectoryAll}
+                              loading={personDirectoryLoading}
+                              excludeIds={motherDirectoryExcludeIds}
+                              onPick={pickExistingMotherFromSearch}
+                              onClear={clearLinkedMother}
+                              linkedPersonId={form.motherPersonId}
+                              linkedNameEn={form.motherNameEn}
+                            />
+                          </div>
+                        ) : null}
+                      </div>
                     ) : null}
                     <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <FormField label="Name (English)" htmlFor="motherNameEn" error={fieldErrors.motherNameEn}>
@@ -1835,8 +2240,8 @@ export default function FamiliesAddPage() {
                           value={form.motherNameEn}
                           onChange={onChange}
                           placeholder="Mother name (English)"
-                          disabled={motherParentLocked}
-                          className={motherParentLocked ? "bg-slate-100 text-slate-700" : ""}
+                          disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
+                          className={motherParentLocked || motherFieldsLockedUntilFatherDone ? "bg-slate-100 text-slate-700" : ""}
                         />
                       </FormField>
                       <FormField label="Name (Nepali)" htmlFor="motherNameNp" error={fieldErrors.motherNameNp}>
@@ -1846,8 +2251,8 @@ export default function FamiliesAddPage() {
                           value={form.motherNameNp}
                           onChange={onChange}
                           placeholder="Mother name (Nepali)"
-                          disabled={motherParentLocked}
-                          className={motherParentLocked ? "bg-slate-100 text-slate-700" : ""}
+                          disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
+                          className={motherParentLocked || motherFieldsLockedUntilFatherDone ? "bg-slate-100 text-slate-700" : ""}
                         />
                       </FormField>
                     </div>
@@ -1858,12 +2263,15 @@ export default function FamiliesAddPage() {
                           name="motherAddDetails"
                           checked={form.motherAddDetails}
                           onChange={onChange}
-                          disabled={motherParentLocked}
+                          disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
                         />
                       </div>
                     </FormField>
                     {form.motherAddDetails && (
-                      <fieldset disabled={motherParentLocked} className="min-w-0 space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+                      <fieldset
+                        disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
+                        className="min-w-0 space-y-4 rounded-lg border border-slate-200 bg-slate-50 p-4"
+                      >
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
                           <FormField label="Gender" htmlFor="motherGender">
                             <select id="motherGender" name="motherGender" value={form.motherGender} onChange={onChange} className="w-full rounded border p-2">
@@ -1913,7 +2321,7 @@ export default function FamiliesAddPage() {
                           municipalityValue={form.motherMunicipality}
                           vdcValue={form.motherVdc}
                           onChange={onChange}
-                          disabled={motherParentLocked}
+                          disabled={motherParentLocked || motherFieldsLockedUntilFatherDone}
                         />
                         <FormField label="Tole / neighbourhood" htmlFor="motherToleEn">
                           <Input id="motherToleEn" name="motherToleEn" value={form.motherToleEn} onChange={onChange} placeholder="Enter tole name" />
@@ -1940,37 +2348,58 @@ export default function FamiliesAddPage() {
               <div className="rounded border border-slate-200 p-4">
                 <div className="mb-3 flex items-center justify-between">
                   <p className="text-sm font-semibold text-slate-800">Wives / spouses</p>
-                  <Button type="button" variant="primary" size="sm" onClick={() => addRelationRow("spouses", "FEMALE")}>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="sm"
+                    disabled={!relationsStep2Unlocked}
+                    onClick={() => addRelationRow("spouses", "FEMALE")}
+                  >
                     + Add spouse
                   </Button>
                 </div>
                 {form.spouses.map((spouse, idx) => {
                   const spouseLine =
                     [String(spouse.nameEn || "").trim(), String(spouse.nameNp || "").trim()].filter(Boolean).join(" · ") ||
-                    (relationRowHasPersistedPerson(spouse) ? "Saved in database" : "Empty row — add a name");
+                    (relationRowHasPersistedPerson(spouse) ? "Saved in database" : "Empty row — add English and Nepali names to save");
                   const spouseOpen = spouseRowOpen[idx] ?? true;
                   const spouseHasNames = Boolean(
                     String(spouse.nameEn || "").trim() || String(spouse.nameNp || "").trim()
                   );
                   const canRemoveSpouseRow =
                     form.spouses.length > 1 || relationRowHasPersistedPerson(spouse) || spouseHasNames;
+                  const spouseRowTouched = relationRowTouchedForStep2(spouse);
+                  const spouseDoneDisabled =
+                    childFieldsLockedBySpouse ||
+                    (spouseRowTouched && (!relationsStep2Unlocked || !relationRowHasBothNames(spouse)));
+                  const spouseFieldsLocked = !relationsStep2Unlocked;
                   return (
                     <div key={`sp-${idx}`} className="mb-3">
                       <CollapsibleRelationCard
                         title={`Spouse ${idx + 1}`}
                         expanded={spouseOpen}
-                        onToggle={() =>
+                        onToggle={() => {
+                          const wasOpen = spouseRowOpen[idx] ?? true;
+                          const willOpen = !wasOpen;
+                          if (willOpen && !relationsStep2Unlocked) {
+                            setError(
+                              "Save Father with Done, then Mother with Done (or remove mother if there is no mother), before opening spouses."
+                            );
+                            setErrorModalOpen(true);
+                            return;
+                          }
                           setSpouseRowOpen((prev) => {
                             const next = [...prev];
                             while (next.length <= idx) next.push(true);
-                            next[idx] = !(next[idx] ?? true);
+                            next[idx] = willOpen;
                             return next;
-                          })
-                        }
+                          });
+                        }}
                         summaryCollapsed={spouseLine}
                         showRemove={canRemoveSpouseRow}
                         onRemove={() => removeRelationRow("spouses", idx)}
                         removeTitle="Remove spouse"
+                        doneDisabled={spouseDoneDisabled}
                         onDone={() =>
                           setSpouseRowOpen((prev) => {
                             const next = [...prev];
@@ -1981,13 +2410,33 @@ export default function FamiliesAddPage() {
                         }
                       >
                     <FormField label="Name (English)" htmlFor={`spouses-${idx}-nameEn`}>
-                      <Input id={`spouses-${idx}-nameEn`} value={spouse.nameEn} onChange={(e) => updateArrayItem("spouses", idx, "nameEn", e.target.value)} placeholder="Spouse name (English)" />
+                      <Input
+                        id={`spouses-${idx}-nameEn`}
+                        value={spouse.nameEn}
+                        onChange={(e) => updateArrayItem("spouses", idx, "nameEn", e.target.value)}
+                        placeholder="Spouse name (English)"
+                        disabled={spouseFieldsLocked}
+                        className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""}
+                      />
                     </FormField>
                     <FormField label="Name (Nepali)" htmlFor={`spouses-${idx}-nameNp`}>
-                      <Input id={`spouses-${idx}-nameNp`} value={spouse.nameNp} onChange={(e) => updateArrayItem("spouses", idx, "nameNp", e.target.value)} placeholder="Spouse name (Nepali)" />
+                      <Input
+                        id={`spouses-${idx}-nameNp`}
+                        value={spouse.nameNp}
+                        onChange={(e) => updateArrayItem("spouses", idx, "nameNp", e.target.value)}
+                        placeholder="Spouse name (Nepali)"
+                        disabled={spouseFieldsLocked}
+                        className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""}
+                      />
                     </FormField>
                     <FormField label="Gender" htmlFor={`spouses-${idx}-gender`}>
-                      <select id={`spouses-${idx}-gender`} value={spouse.gender} onChange={(e) => updateArrayItem("spouses", idx, "gender", e.target.value)} className="w-full rounded border p-2">
+                      <select
+                        id={`spouses-${idx}-gender`}
+                        value={spouse.gender}
+                        onChange={(e) => updateArrayItem("spouses", idx, "gender", e.target.value)}
+                        disabled={spouseFieldsLocked}
+                        className={`w-full rounded border p-2 ${spouseFieldsLocked ? "cursor-not-allowed bg-slate-100 text-slate-600" : ""}`}
+                      >
                         <option value="FEMALE">Female</option>
                         <option value="MALE">Male</option>
                         <option value="OTHER">Other</option>
@@ -2000,6 +2449,7 @@ export default function FamiliesAddPage() {
                           name="spouse-addDetails"
                           checked={spouse.addDetails}
                           onChange={(e) => updateArrayItem("spouses", idx, "addDetails", e.target.checked)}
+                          disabled={spouseFieldsLocked}
                         />
                       </div>
                     </FormField>
@@ -2007,10 +2457,10 @@ export default function FamiliesAddPage() {
                       <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-4">
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                           <FormField label="Date of birth" htmlFor={`spouses-${idx}-dob`}>
-                            <Input id={`spouses-${idx}-dob`} value={spouse.dateOfBirth || ""} type="date" onChange={(e) => updateArrayItem("spouses", idx, "dateOfBirth", e.target.value)} />
+                            <Input id={`spouses-${idx}-dob`} value={spouse.dateOfBirth || ""} type="date" onChange={(e) => updateArrayItem("spouses", idx, "dateOfBirth", e.target.value)} disabled={spouseFieldsLocked} className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                           <FormField label="Phone" htmlFor={`spouses-${idx}-phone`}>
-                            <Input id={`spouses-${idx}-phone`} value={spouse.phone || ""} placeholder="Mobile / landline" onChange={(e) => updateArrayItem("spouses", idx, "phone", e.target.value)} />
+                            <Input id={`spouses-${idx}-phone`} value={spouse.phone || ""} placeholder="Mobile / landline" onChange={(e) => updateArrayItem("spouses", idx, "phone", e.target.value)} disabled={spouseFieldsLocked} className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -2024,7 +2474,7 @@ export default function FamiliesAddPage() {
                             />
                           </FormField>
                           <FormField label="District" htmlFor={`spouses-${idx}-district`}>
-                            <select id={`spouses-${idx}-district`} value={spouse.districtId || ""} onChange={(e) => updateArrayItem("spouses", idx, "districtId", e.target.value)} className="w-full rounded border p-2">
+                            <select id={`spouses-${idx}-district`} value={spouse.districtId || ""} onChange={(e) => updateArrayItem("spouses", idx, "districtId", e.target.value)} disabled={spouseFieldsLocked} className={`w-full rounded border p-2 ${spouseFieldsLocked ? "cursor-not-allowed bg-slate-100 text-slate-600" : ""}`}>
                               <option value="">Select district</option>
                               {districts.map((district) => (
                                 <option key={`sd-${idx}-${district.id}`} value={district.id}>{district.nameEn} ({district.nameNp})</option>
@@ -2032,7 +2482,7 @@ export default function FamiliesAddPage() {
                             </select>
                           </FormField>
                           <FormField label="Ward number" htmlFor={`spouses-${idx}-ward`}>
-                            <Input id={`spouses-${idx}-ward`} value={spouse.wardNo || ""} type="number" placeholder="Ward no." onChange={(e) => updateArrayItem("spouses", idx, "wardNo", e.target.value)} />
+                            <Input id={`spouses-${idx}-ward`} value={spouse.wardNo || ""} type="number" placeholder="Ward no." onChange={(e) => updateArrayItem("spouses", idx, "wardNo", e.target.value)} disabled={spouseFieldsLocked} className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                         </div>
                         <LocalityFieldRow
@@ -2046,9 +2496,10 @@ export default function FamiliesAddPage() {
                           municipalityValue={spouse.municipality || ""}
                           vdcValue={spouse.vdc || ""}
                           onChange={(e) => updateArrayItem("spouses", idx, e.target.name, e.target.value)}
+                          disabled={spouseFieldsLocked}
                         />
                         <FormField label="Tole / neighbourhood" htmlFor={`spouses-${idx}-toleEn`}>
-                          <Input id={`spouses-${idx}-toleEn`} value={spouse.toleEn || ""} placeholder="Enter tole name" onChange={(e) => updateArrayItem("spouses", idx, "toleEn", e.target.value)} />
+                          <Input id={`spouses-${idx}-toleEn`} value={spouse.toleEn || ""} placeholder="Enter tole name" onChange={(e) => updateArrayItem("spouses", idx, "toleEn", e.target.value)} disabled={spouseFieldsLocked} className={spouseFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                         </FormField>
                       </div>
                     )}
@@ -2065,7 +2516,7 @@ export default function FamiliesAddPage() {
                     type="button"
                     variant="primary"
                     size="sm"
-                    disabled={childFieldsLockedBySpouse}
+                    disabled={childFieldsLockedBySpouse || !relationsStep2Unlocked}
                     onClick={() => addRelationRow("children", "MALE")}
                   >
                     + Add child
@@ -2073,38 +2524,52 @@ export default function FamiliesAddPage() {
                 </div>
                 {spouseRequiredForChildrenUi && !hasSpouseForChildrenUi ? (
                   <p className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-950">
-                    Add a spouse with a name (English or Nepali) before adding children. For male or female heads, each
+                    Add a spouse with both English and Nepali names before adding children. For male or female heads, each
                     child needs the other parent from the spouse row.
                   </p>
                 ) : null}
                 {form.children.map((child, idx) => {
                   const childLine =
                     [String(child.nameEn || "").trim(), String(child.nameNp || "").trim()].filter(Boolean).join(" · ") ||
-                    (relationRowHasPersistedPerson(child) ? "Saved in database" : "Empty row");
+                    (relationRowHasPersistedPerson(child) ? "Saved in database" : "Empty row — add English and Nepali names to save");
                   const childOpen = childRowOpen[idx] ?? true;
                   const childHasNames = Boolean(
                     String(child.nameEn || "").trim() || String(child.nameNp || "").trim()
                   );
                   const canRemoveChildRow =
                     form.children.length > 1 || relationRowHasPersistedPerson(child) || childHasNames;
+                  const childRowTouched = relationRowTouchedForStep2(child);
+                  const childDoneDisabled =
+                    childFieldsLockedBySpouse ||
+                    (childRowTouched && (!relationsStep2Unlocked || !relationRowHasBothNames(child)));
+                  const childFieldsLocked = childFieldsLockedBySpouse || !relationsStep2Unlocked;
                   return (
                     <div key={`ch-${idx}`} className="mb-3">
                       <CollapsibleRelationCard
                         title={`Child ${idx + 1}`}
                         expanded={childOpen}
-                        onToggle={() =>
+                        onToggle={() => {
+                          const wasOpen = childRowOpen[idx] ?? true;
+                          const willOpen = !wasOpen;
+                          if (willOpen && !relationsStep2Unlocked) {
+                            setError(
+                              "Save Father with Done, then Mother with Done (or remove mother if none), before opening children."
+                            );
+                            setErrorModalOpen(true);
+                            return;
+                          }
                           setChildRowOpen((prev) => {
                             const next = [...prev];
                             while (next.length <= idx) next.push(true);
-                            next[idx] = !(next[idx] ?? true);
+                            next[idx] = willOpen;
                             return next;
-                          })
-                        }
+                          });
+                        }}
                         summaryCollapsed={childLine}
                         showRemove={canRemoveChildRow}
                         onRemove={() => removeRelationRow("children", idx)}
                         removeTitle="Remove child"
-                        doneDisabled={childFieldsLockedBySpouse}
+                        doneDisabled={childDoneDisabled}
                         onDone={() =>
                           setChildRowOpen((prev) => {
                             const next = [...prev];
@@ -2120,8 +2585,8 @@ export default function FamiliesAddPage() {
                         value={child.nameEn}
                         onChange={(e) => updateArrayItem("children", idx, "nameEn", e.target.value)}
                         placeholder="Child name (English)"
-                        disabled={childFieldsLockedBySpouse}
-                        className={childFieldsLockedBySpouse ? "bg-slate-100 text-slate-600" : ""}
+                        disabled={childFieldsLocked}
+                        className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""}
                       />
                     </FormField>
                     <FormField label="Name (Nepali)" htmlFor={`children-${idx}-nameNp`}>
@@ -2130,8 +2595,8 @@ export default function FamiliesAddPage() {
                         value={child.nameNp}
                         onChange={(e) => updateArrayItem("children", idx, "nameNp", e.target.value)}
                         placeholder="Child name (Nepali)"
-                        disabled={childFieldsLockedBySpouse}
-                        className={childFieldsLockedBySpouse ? "bg-slate-100 text-slate-600" : ""}
+                        disabled={childFieldsLocked}
+                        className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""}
                       />
                     </FormField>
                     <FormField label="Gender" htmlFor={`children-${idx}-gender`}>
@@ -2139,8 +2604,8 @@ export default function FamiliesAddPage() {
                         id={`children-${idx}-gender`}
                         value={child.gender}
                         onChange={(e) => updateArrayItem("children", idx, "gender", e.target.value)}
-                        disabled={childFieldsLockedBySpouse}
-                        className={`w-full rounded border p-2 ${childFieldsLockedBySpouse ? "cursor-not-allowed bg-slate-100 text-slate-600" : ""}`}
+                        disabled={childFieldsLocked}
+                        className={`w-full rounded border p-2 ${childFieldsLocked ? "cursor-not-allowed bg-slate-100 text-slate-600" : ""}`}
                       >
                         <option value="MALE">Male</option>
                         <option value="FEMALE">Female</option>
@@ -2154,18 +2619,18 @@ export default function FamiliesAddPage() {
                           name="child-addDetails"
                           checked={child.addDetails}
                           onChange={(e) => updateArrayItem("children", idx, "addDetails", e.target.checked)}
-                          disabled={childFieldsLockedBySpouse}
+                          disabled={childFieldsLocked}
                         />
                       </div>
                     </FormField>
                     {child.addDetails && (
-                      <fieldset disabled={childFieldsLockedBySpouse} className="min-w-0 space-y-4 rounded-lg border border-slate-200 bg-white p-4">
+                      <fieldset disabled={childFieldsLocked} className="min-w-0 space-y-4 rounded-lg border border-slate-200 bg-white p-4">
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                           <FormField label="Date of birth" htmlFor={`children-${idx}-dob`}>
-                            <Input id={`children-${idx}-dob`} value={child.dateOfBirth || ""} type="date" onChange={(e) => updateArrayItem("children", idx, "dateOfBirth", e.target.value)} />
+                            <Input id={`children-${idx}-dob`} value={child.dateOfBirth || ""} type="date" onChange={(e) => updateArrayItem("children", idx, "dateOfBirth", e.target.value)} disabled={childFieldsLocked} className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                           <FormField label="Phone" htmlFor={`children-${idx}-phone`}>
-                            <Input id={`children-${idx}-phone`} value={child.phone || ""} placeholder="Mobile / landline" onChange={(e) => updateArrayItem("children", idx, "phone", e.target.value)} />
+                            <Input id={`children-${idx}-phone`} value={child.phone || ""} placeholder="Mobile / landline" onChange={(e) => updateArrayItem("children", idx, "phone", e.target.value)} disabled={childFieldsLocked} className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                         </div>
                         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
@@ -2179,7 +2644,7 @@ export default function FamiliesAddPage() {
                             />
                           </FormField>
                           <FormField label="District" htmlFor={`children-${idx}-district`}>
-                            <select id={`children-${idx}-district`} value={child.districtId || ""} onChange={(e) => updateArrayItem("children", idx, "districtId", e.target.value)} className="w-full rounded border p-2">
+                            <select id={`children-${idx}-district`} value={child.districtId || ""} onChange={(e) => updateArrayItem("children", idx, "districtId", e.target.value)} disabled={childFieldsLocked} className={`w-full rounded border p-2 ${childFieldsLocked ? "cursor-not-allowed bg-slate-100 text-slate-600" : ""}`}>
                               <option value="">Select district</option>
                               {districts.map((district) => (
                                 <option key={`cd-${idx}-${district.id}`} value={district.id}>{district.nameEn} ({district.nameNp})</option>
@@ -2187,7 +2652,7 @@ export default function FamiliesAddPage() {
                             </select>
                           </FormField>
                           <FormField label="Ward number" htmlFor={`children-${idx}-ward`}>
-                            <Input id={`children-${idx}-ward`} value={child.wardNo || ""} type="number" placeholder="Ward no." onChange={(e) => updateArrayItem("children", idx, "wardNo", e.target.value)} />
+                            <Input id={`children-${idx}-ward`} value={child.wardNo || ""} type="number" placeholder="Ward no." onChange={(e) => updateArrayItem("children", idx, "wardNo", e.target.value)} disabled={childFieldsLocked} className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                           </FormField>
                         </div>
                         <LocalityFieldRow
@@ -2201,9 +2666,10 @@ export default function FamiliesAddPage() {
                           municipalityValue={child.municipality || ""}
                           vdcValue={child.vdc || ""}
                           onChange={(e) => updateArrayItem("children", idx, e.target.name, e.target.value)}
+                          disabled={childFieldsLocked}
                         />
                         <FormField label="Tole / neighbourhood" htmlFor={`children-${idx}-toleEn`}>
-                          <Input id={`children-${idx}-toleEn`} value={child.toleEn || ""} placeholder="Enter tole name" onChange={(e) => updateArrayItem("children", idx, "toleEn", e.target.value)} />
+                          <Input id={`children-${idx}-toleEn`} value={child.toleEn || ""} placeholder="Enter tole name" onChange={(e) => updateArrayItem("children", idx, "toleEn", e.target.value)} disabled={childFieldsLocked} className={childFieldsLocked ? "bg-slate-100 text-slate-600" : ""} />
                         </FormField>
                       </fieldset>
                     )}

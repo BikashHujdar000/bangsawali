@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import AppLayout from "../layouts/AppLayout";
 import Input from "../components/common/Input";
@@ -98,19 +98,35 @@ export default function FamiliesViewPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refetch when super-admin list scope changes
   }, [filters.status]);
 
-  const personsByFamily = persons.reduce((acc, person) => {
-    const familyId = person?.family?.id;
-    if (!familyId) return acc;
-    if (!acc[familyId]) acc[familyId] = [];
-    acc[familyId].push(person);
+  /** Active household members keyed by numeric family id (matches Family Details household slice). */
+  const personsByFamily = useMemo(() => {
+    const acc = {};
+    for (const person of persons) {
+      if (!person || person.deleted) continue;
+      const raw = person.family?.id;
+      if (raw == null || raw === "") continue;
+      const fid = Number(raw);
+      if (Number.isNaN(fid)) continue;
+      if (!acc[fid]) acc[fid] = [];
+      acc[fid].push(person);
+    }
     return acc;
-  }, {});
+  }, [persons]);
 
-  function pickPrimaryOrFirstMember(family) {
-    const members = personsByFamily[family.id] || [];
-    if (family.primaryPersonId) {
-      const found = members.find((member) => member.id === family.primaryPersonId);
-      if (found) return found;
+  /**
+   * Primary for this family row: household member with family.primaryPersonId, or same id anywhere in the
+   * directory (head may still be primary on this family after branching while person.family points elsewhere).
+   */
+  function pickPrimaryPerson(family, members) {
+    const rawPid = family.primaryPersonId;
+    if (rawPid != null && rawPid !== "") {
+      const pid = Number(rawPid);
+      if (!Number.isNaN(pid) && pid > 0) {
+        const inHousehold = members.find((m) => Number(m?.id) === pid);
+        if (inHousehold) return inHousehold;
+        const anywhere = persons.find((p) => p && !p.deleted && Number(p?.id) === pid);
+        if (anywhere) return anywhere;
+      }
     }
     return members[0] || null;
   }
@@ -121,8 +137,9 @@ export default function FamiliesViewPage() {
   }
 
   function familyFacts(family) {
-    const members = personsByFamily[family.id] || [];
-    const primary = pickPrimaryOrFirstMember(family);
+    const fid = Number(family.id);
+    const members = Number.isNaN(fid) ? [] : personsByFamily[fid] || [];
+    const primary = pickPrimaryPerson(family, members);
     const district = primary?.district || null;
     const province = district?.provinceNameEn || "";
     const districtId = district?.id ? String(district.id) : "";
@@ -131,14 +148,46 @@ export default function FamiliesViewPage() {
     const vdc = primary?.vdc || firstNonEmpty(members, "vdc");
     const tole = primary?.toleEn || firstNonEmpty(members, "toleEn");
     const wardNo = primary?.wardNo ?? members.find((m) => m?.wardNo != null)?.wardNo ?? "";
-    const hasParentLinks = Boolean(primary?.father || primary?.mother);
-    const hasSpouse = members.some((m) => m?.spouse);
-    const hasChildren = family.primaryPersonId
-      ? members.some((m) => m?.father?.id === family.primaryPersonId || m?.mother?.id === family.primaryPersonId)
-      : members.some((m) => m?.father || m?.mother);
-    /** Parents linked on the household primary (same notion as Family Details → Relations). */
+    const primaryIdRaw = family.primaryPersonId ?? primary?.id ?? null;
+    const primaryIdNum =
+      primaryIdRaw != null && primaryIdRaw !== "" && !Number.isNaN(Number(primaryIdRaw)) && Number(primaryIdRaw) > 0
+        ? Number(primaryIdRaw)
+        : null;
+
+    /** Same rules as Family Details relation cards: parents on primary row only. */
     const parentLinkedCount = (primary?.father ? 1 : 0) + (primary?.mother ? 1 : 0);
-    const spouseLinkedCount = members.filter((m) => m?.spouse).length;
+    const hasParentLinks = parentLinkedCount > 0;
+
+    /**
+     * Spouse: primary.spouse OR reverse link (someone lists primary as spouse), matching detail extended logic.
+     */
+    const spousePersonIds = new Set();
+    if (primary?.spouse?.id != null && !Number.isNaN(Number(primary.spouse.id))) {
+      spousePersonIds.add(Number(primary.spouse.id));
+    }
+    if (primaryIdNum != null) {
+      for (const m of persons) {
+        if (!m || m.deleted) continue;
+        if (Number(m?.spouse?.id) === primaryIdNum) spousePersonIds.add(Number(m.id));
+      }
+    }
+    const spouseLinkedCount = spousePersonIds.size;
+    const hasSpouse = spouseLinkedCount > 0;
+
+    /**
+     * Children: anyone who lists this primary as father or mother (may live in another household after branch),
+     * same scope as detail "extended" children.
+     */
+    const childrenLinkedCount =
+      primaryIdNum != null
+        ? persons.filter(
+            (p) =>
+              p &&
+              !p.deleted &&
+              (Number(p?.father?.id) === primaryIdNum || Number(p?.mother?.id) === primaryIdNum)
+          ).length
+        : 0;
+    const hasChildren = childrenLinkedCount > 0;
     const searchable = [
       family.id,
       family.familyNameEn,
@@ -170,8 +219,8 @@ export default function FamiliesViewPage() {
       hasChildren,
       parentLinkedCount,
       spouseLinkedCount,
+      childrenLinkedCount,
       searchable,
-      membersCount: members.length,
     };
   }
 
@@ -338,7 +387,6 @@ export default function FamiliesViewPage() {
                     <th className={dataTableThClass}>Primary person</th>
                     <th className={dataTableThClass}>Location</th>
                     <th className={dataTableThClass}>Relations</th>
-                    <th className={dataTableThClass}>Members</th>
                     <th className={dataTableThClass}>Actions</th>
                   </tr>
                 </thead>
@@ -373,9 +421,8 @@ export default function FamiliesViewPage() {
                         <td className={dataTableTdClass}>{location || "—"}</td>
                         <td className={`${dataTableTdClass} text-xs text-slate-700`}>
                           Parents: {facts.parentLinkedCount} · Spouse: {facts.spouseLinkedCount} · Children:{" "}
-                          {facts.hasChildren ? "Yes" : "No"}
+                          {facts.childrenLinkedCount}
                         </td>
-                        <td className={dataTableTdClass}>{facts.membersCount}</td>
                         <td className={dataTableTdClass}>
                           <div className="flex flex-wrap gap-2">
                             <Link to={`/families/${family.id}`} className={adminBtnSmPrimary}>

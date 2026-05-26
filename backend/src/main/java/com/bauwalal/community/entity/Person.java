@@ -12,6 +12,7 @@ import java.time.LocalDate;
 @Table(name = "persons")
 @Getter
 @Setter
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 public class Person extends BaseEntity {
     @ManyToOne(optional = false)
     private Family family;

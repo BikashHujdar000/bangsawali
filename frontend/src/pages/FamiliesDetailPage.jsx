@@ -283,13 +283,23 @@ export default function FamiliesDetailPage() {
     const pid = family.primaryPersonId;
     if (pid == null || pid === "") return null;
     const n = Number(pid);
-    return householdMembers.find((m) => Number(m.id) === n) || null;
-  }, [family, householdMembers]);
+    const fromHousehold = householdMembers.find((m) => Number(m.id) === n);
+    if (fromHousehold) return fromHousehold;
+    /** Head may be primary for this family row while their person.family still points at another household (e.g. after branch). */
+    return extendedMembers.find((m) => Number(m.id) === n) || null;
+  }, [family, householdMembers, extendedMembers]);
+
+  /** Table rows: API members plus primary when they are not on this family_id (still show head on this record). */
+  const householdMembersForTable = useMemo(() => {
+    if (!primary) return householdMembers;
+    if (householdMembers.some((m) => Number(m.id) === Number(primary.id))) return householdMembers;
+    return [primary, ...householdMembers];
+  }, [householdMembers, primary]);
 
   const linkedOnlyMembers = useMemo(() => {
-    const hid = new Set(householdMembers.map((m) => m.id));
-    return extendedMembers.filter((m) => !hid.has(m.id));
-  }, [householdMembers, extendedMembers]);
+    const shownIds = new Set(householdMembersForTable.map((m) => Number(m.id)));
+    return extendedMembers.filter((m) => !shownIds.has(Number(m.id)));
+  }, [householdMembersForTable, extendedMembers]);
 
   const relationSummary = useMemo(() => {
     if (!primary) {
@@ -399,11 +409,11 @@ export default function FamiliesDetailPage() {
               )}
 
               {family.deleted ? null : (
-                <DetailSection title={`Household on this record (${householdMembers.length})`}>
+                <DetailSection title={`Household on this record (${householdMembersForTable.length})`}>
                 <PersonDetailsTable
                   title=""
                   subtitle=""
-                  members={householdMembers}
+                  members={householdMembersForTable}
                   showHouseholdCol={false}
                   pageFamilyId={numericId}
                   primaryPersonId={family.primaryPersonId}
